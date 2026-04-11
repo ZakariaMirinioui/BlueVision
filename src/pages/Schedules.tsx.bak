@@ -1,0 +1,1150 @@
+import { useState, useEffect } from 'react';
+import {
+  format,
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  isWithinInterval,
+  addDays,
+  subMonths,
+  addMonths,
+  addWeeks,
+  isSameMonth,
+  isSameDay,
+  getDay
+} from 'date-fns';
+import {
+  CalendarIcon,
+  CheckCircle2,
+  Clock,
+  Plus,
+  Search,
+  XCircle,
+  Eye,
+  Pencil,
+  Trash2,
+  MoreHorizontal,
+  Calendar as CalendarIcon2
+} from "lucide-react";
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import type { Schedule, CreateScheduleDto } from "@/types/schedule";
+import type { Display } from "@/types/display";
+import type { Layout } from "@/types/layout-media";
+import { xiboService } from "@/services/XiboAPI";
+
+interface FormErrors {
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+  displays?: string;
+  content?: string;
+}
+
+const Schedules = () => {
+  const { toast } = useToast();
+  const [startDate, setStartDate] = useState<Date>();
+  const [endDate, setEndDate] = useState<Date>();
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
+  const [selectedDisplays, setSelectedDisplays] = useState<string[]>([]);
+  const [calendarView, setCalendarView] = useState<'month' | 'week'>('month');
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [selectedEvent, setSelectedEvent] = useState<Schedule | null>(null);
+  const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
+  const [scheduleName, setScheduleName] = useState("");
+  const [priority, setPriority] = useState<Schedule["priority"]>("Medium");
+  const [selectedContent, setSelectedContent] = useState("");
+  const [repeatSchedule, setRepeatSchedule] = useState<Schedule["repeatSchedule"]>("none");
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [displays, setDisplays] = useState<Display[]>([]);
+  const [availableLayouts, setAvailableLayouts] = useState<Layout[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [scheduleToDelete, setScheduleToDelete] = useState<string | null>(null);
+  const [detailsDialog, setDetailsDialog] = useState<Schedule | null>(null);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Set initial loading state
+        setLoading(true);
+
+        // Load schedules first for initial display
+        const scheduleData = await xiboService.getSchedules();
+        setSchedules(scheduleData);
+
+        // Then load the rest in parallel
+        const [displayData, layoutData] = await Promise.all([
+          xiboService.getDisplays(),
+          xiboService.getLayouts()
+        ]);
+
+        setDisplays(displayData);
+        setAvailableLayouts(layoutData);
+      } catch (err) {
+        console.error('Error loading data:', err);
+        toast({
+          title: "Error",
+          description: "Failed to load required data",
+          variant: "destructive",
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [toast]);
+
+  const validateForm = () => {
+    const errors: typeof formErrors = {};
+
+    if (!scheduleName.trim()) {
+      errors.name = "Schedule name is required";
+    }
+
+    if (!startDate) {
+      errors.startDate = "Start date is required";
+    }
+
+    if (!endDate) {
+      errors.endDate = "End date is required";
+    }
+
+    if (startDate && endDate && startDate > endDate) {
+      errors.endDate = "End date must be after start date";
+    }
+
+    if (selectedDisplays.length === 0) {
+      errors.displays = "At least one display must be selected";
+    }
+
+    if (!selectedContent) {
+      errors.content = "Content must be selected";
+    }
+
+    const selectedLayout = availableLayouts.find(l => l.id.toString() === selectedContent);
+    if (selectedLayout?.status !== "online") {
+      errors.content = "Selected layout must be published";
+    }
+
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const createOrUpdateSchedule = async () => {
+    if (!validateForm()) {
+      toast({
+        title: "Validation Error",
+        description: "Please fix the errors in the form",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      const selectedLayout = availableLayouts.find(l => l.id.toString() === selectedContent);
+      const scheduleData: CreateScheduleDto = {
+        name: scheduleName.trim(),
+        priority: priority,
+        startDate: startDate!,
+        endDate: endDate!,
+        displayIds: selectedDisplays,
+        content: selectedLayout?.name || "",
+        repeatSchedule: repeatSchedule
+      };
+
+      let updatedSchedule;
+      if (editingSchedule) {
+        updatedSchedule = await xiboService.updateSchedule(editingSchedule.id, scheduleData);
+        setSchedules(prev => prev.map(s => s.id === editingSchedule.id ? updatedSchedule : s));
+        toast({
+          title: "Schedule Updated",
+          description: "Your schedule has been updated successfully",
+        });
+      } else {
+        const newSchedule = await xiboService.createSchedule(scheduleData);
+        setSchedules(prev => [...prev, newSchedule]);
+        toast({
+          title: "Schedule Created",
+          description: "Your schedule has been created successfully",
+        });
+      }
+
+      resetForm();
+      setIsScheduleDialogOpen(false);
+      setEditingSchedule(null);
+    } catch (error) {
+      console.error('Error saving schedule:', error);
+      toast({
+        title: "Error",
+        description: `Failed to ${editingSchedule ? 'update' : 'create'} schedule. Please try again.`,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const resetForm = () => {
+    setSelectedDisplays([]);
+    setStartDate(undefined);
+    setEndDate(undefined);
+    setScheduleName("");
+    setPriority("Medium");
+    setSelectedContent("");
+    setRepeatSchedule("none");
+    setFormErrors({});
+  };
+
+  const handlePriorityChange = (value: string) => {
+    setPriority(value as Schedule["priority"]);
+  };
+
+  const handleRepeatScheduleChange = (value: string) => {
+    setRepeatSchedule(value as Schedule["repeatSchedule"]);
+  };
+
+  const toggleDisplaySelection = (displayId: string) => {
+    setSelectedDisplays(prev => {
+      if (prev.includes(displayId)) {
+        return prev.filter(id => id !== displayId);
+      }
+      return [...prev, displayId];
+    });
+    if (formErrors.displays) {
+      setFormErrors(prev => ({ ...prev, displays: undefined }));
+    }
+  };
+
+  const getEventColor = (priority: Schedule['priority']) => {
+    switch (priority) {
+      case 'High':
+        return 'bg-red-500';
+      case 'Medium':
+        return 'bg-blue-500';
+      case 'Low':
+        return 'bg-green-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const getEventsForDate = (date: Date) => {
+    return schedules.filter(schedule => {
+      const start = new Date(schedule.startDate);
+      const end = new Date(schedule.endDate);
+      return isWithinInterval(date, { start, end });
+    });
+  };
+
+  const handleEventClick = (event: Schedule) => {
+    setSelectedEvent(event);
+  };
+
+  const renderEvents = (date: Date) => {
+    const events = getEventsForDate(date);
+    return events.map((event) => (
+      <div
+        key={event.id}
+        onClick={() => handleEventClick(event)}
+        className={cn(
+          "px-2 py-1 rounded text-white text-sm mb-1 cursor-pointer truncate",
+          getEventColor(event.priority)
+        )}
+        title={`${event.name} - ${event.content}`}
+      >
+        {event.name}
+      </div>
+    ));
+  };
+
+  const renderWeekView = () => {
+    const weekStart = startOfWeek(selectedDate);
+    const weekEnd = endOfWeek(selectedDate);
+    const days = eachDayOfInterval({ start: weekStart, end: weekEnd });
+
+    return (
+      <div className="grid grid-cols-7 gap-4 h-[600px]">
+        {days.map((day) => (
+          <div key={day.toISOString()} className="border rounded-lg p-2">
+            <div className="text-sm font-medium mb-2">
+              {format(day, 'EEEE')}
+              <br />
+              {format(day, 'dd')}
+            </div>
+            <div className="space-y-1 overflow-y-auto max-h-[500px]">
+              {renderEvents(day)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Schedule Management</h1>
+            <p className="text-muted-foreground">Create and manage content schedules for your displays</p>
+          </div>
+        </div>
+        <Card>
+          <CardContent className="flex items-center justify-center py-10">
+            <div className="flex flex-col items-center gap-2">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              <p className="text-sm text-muted-foreground">Loading schedules...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const displaySchedules = (scheduleArray: Schedule[]) => {
+    if (scheduleArray.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={7} className="text-center py-6">
+            <div className="flex flex-col items-center justify-center">
+              <XCircle className="h-10 w-10 text-muted-foreground mb-4" />
+              <h3 className="text-lg font-medium">No schedules found</h3>
+              <p className="text-sm text-muted-foreground mt-2">
+                Create a new schedule to get started
+              </p>
+            </div>
+          </TableCell>
+        </TableRow>
+      );
+    }
+
+    return scheduleArray.map(schedule => (
+      <TableRow key={schedule.id}>
+        <TableCell className="font-medium">{schedule.name}</TableCell>
+        <TableCell>
+          <Badge variant={
+            schedule.priority === "High" ? "destructive" :
+              schedule.priority === "Medium" ? "default" :
+                "secondary"
+          }>
+            {schedule.priority}
+          </Badge>
+        </TableCell>
+        <TableCell>{format(new Date(schedule.startDate), 'PPP')}</TableCell>
+        <TableCell>{format(new Date(schedule.endDate), 'PPP')}</TableCell>
+        <TableCell>{schedule.displays?.join(", ") || "No displays"}</TableCell>
+        <TableCell>{schedule.content}</TableCell>
+        <TableCell>
+          <div className="flex items-center">
+            {schedule.status === "Active" && <CheckCircle2 className="mr-2 h-4 w-4 text-green-500" />}
+            {schedule.status === "Scheduled" && <Clock className="mr-2 h-4 w-4 text-blue-500" />}
+            {schedule.status}
+          </div>
+        </TableCell>
+        <TableCell>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setDetailsDialog(schedule)}>
+                <Eye className="mr-2 h-4 w-4" />
+                View Details
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleEditSchedule(schedule)}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  setScheduleToDelete(schedule.id);
+                  setShowDeleteDialog(true);
+                }}
+                className="text-destructive"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </TableCell>
+      </TableRow>
+    ));
+  };
+
+  const handleViewSchedule = (schedule: Schedule) => {
+    setSelectedEvent(schedule);
+  };
+
+  const handleDeleteSchedule = (scheduleId: string) => {
+    setScheduleToDelete(scheduleId);
+    setShowDeleteDialog(true);
+  };
+
+  const handleEditSchedule = (schedule: Schedule) => {
+    setEditingSchedule(schedule);
+    setScheduleName(schedule.name);
+    setPriority(schedule.priority);
+    setStartDate(new Date(schedule.startDate));
+    setEndDate(new Date(schedule.endDate));
+    setSelectedDisplays(schedule.displays || []);
+    setSelectedContent(schedule.content);
+    setRepeatSchedule(schedule.repeatSchedule);
+    setIsScheduleDialogOpen(true);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Schedule Management</h1>
+          <p className="text-muted-foreground">Create and manage content schedules for your displays</p>
+        </div>
+        <Dialog open={isScheduleDialogOpen} onOpenChange={setIsScheduleDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="mr-2 h-4 w-4" /> New Schedule
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{editingSchedule ? "Edit Schedule" : "Create New Schedule"}</DialogTitle>
+              <DialogDescription>
+                Schedule content to be displayed on selected screens.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-6 py-4">
+              <div className="grid gap-4">
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">
+                    Schedule Name <span className="text-destructive">*</span>
+                  </label>
+                  <Input
+                    placeholder="Enter schedule name"
+                    value={scheduleName}
+                    onChange={(e) => {
+                      setScheduleName(e.target.value);
+                      if (formErrors.name) {
+                        setFormErrors(prev => ({ ...prev, name: undefined }));
+                      }
+                    }}
+                    className={cn(formErrors.name && "border-destructive")}
+                  />
+                  {formErrors.name && (
+                    <p className="text-sm text-destructive mt-1">{formErrors.name}</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        Start Date <span className="text-destructive">*</span>
+                      </label>
+                      <Popover modal={true}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              "flex w-full items-center rounded-md px-4 py-2 text-left",
+                              "bg-purple-500 text-white hover:bg-purple-600 transition-colors",
+                              "focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2",
+                              !startDate && "text-gray-200"
+                            )}
+                          >
+                            <CalendarIcon className="mr-2 h-4 w-4" />
+                            {startDate ? format(startDate, "PPP") : "Pick a date"}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0 bg-white" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={startDate}
+                            onSelect={(date) => {
+                              setStartDate(date);
+                              if (formErrors.startDate) {
+                                setFormErrors(prev => ({ ...prev, startDate: undefined }));
+                              }
+                            }}
+                            disabled={(date) => date < new Date()}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      {formErrors.startDate && (
+                        <p className="text-sm text-destructive mt-1">{formErrors.startDate}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        End Date <span className="text-destructive">*</span>
+                      </label>
+                      <Popover modal={true}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              "flex w-full items-center rounded-md px-4 py-2 text-left",
+                              "bg-purple-500 text-white hover:bg-purple-600 transition-colors",
+                              "focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2",
+                              !endDate && "text-gray-200"
+                            )}
+                          >
+                            <CalendarIcon className="mr-2 h-4 w-4" />
+                            {endDate ? format(endDate, "PPP") : "Pick a date"}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0 bg-white" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={endDate}
+                            onSelect={(date) => {
+                              setEndDate(date);
+                              if (formErrors.endDate) {
+                                setFormErrors(prev => ({ ...prev, endDate: undefined }));
+                              }
+                            }}
+                            disabled={(date) => date < (startDate || new Date())}
+                            initialFocus
+                            defaultMonth={endDate || startDate || new Date()}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      {formErrors.endDate && (
+                        <p className="text-sm text-destructive mt-1">{formErrors.endDate}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">
+                    Select Content <span className="text-destructive">*</span>
+                  </label>
+                  <Select
+                    value={selectedContent}
+                    onValueChange={(value) => {
+                      setSelectedContent(value);
+                      if (formErrors.content) {
+                        setFormErrors(prev => ({ ...prev, content: undefined }));
+                      }
+                    }}
+                  >
+                    <SelectTrigger className={cn(
+                      formErrors.content && "border-destructive"
+                    )}>
+                      <SelectValue placeholder="Choose content to display" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableLayouts.map((layout) => (
+                        <SelectItem key={layout.id} value={layout.id.toString()}>
+                          {layout.name}
+                          {layout.description && (
+                            <span className="text-muted-foreground ml-2">
+                              ({layout.description})
+                            </span>
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {formErrors.content && (
+                    <p className="text-sm text-destructive mt-1">{formErrors.content}</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">
+                    Priority
+                  </label>
+                  <Select value={priority} onValueChange={handlePriorityChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select priority" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="High">High</SelectItem>
+                      <SelectItem value="Medium">Medium</SelectItem>
+                      <SelectItem value="Low">Low</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">
+                    Repeat Schedule
+                  </label>
+                  <Select value={repeatSchedule} onValueChange={handleRepeatScheduleChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select repeat schedule" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Does not repeat</SelectItem>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-medium mb-4">
+                  Select Displays <span className="text-destructive">*</span>
+                </h3>
+                <div className="grid grid-cols-2 gap-4" style={{ maxHeight: '200px', overflowY: 'auto', paddingRight: '16px' }}>
+                  {displays.map((display) => (
+                    <div
+                      key={display.id}
+                      className={cn(
+                        "p-3 rounded-lg border cursor-pointer transition-colors",
+                        selectedDisplays.includes(display.id)
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-primary/50",
+                        formErrors.displays && "border-destructive"
+                      )}
+                      onClick={() => toggleDisplaySelection(display.id)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-medium">{display.name}</h4>
+                          <p className="text-sm text-muted-foreground">{display.location}</p>
+                        </div>
+                        <Badge variant={display.status === "online" ? "default" : "secondary"}>
+                          {display.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {formErrors.displays && (
+                  <p className="text-sm text-destructive mt-2">{formErrors.displays}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-between mt-6">
+              <Button variant="outline" onClick={() => {
+                resetForm();
+                setIsScheduleDialogOpen(false);
+              }}>
+                Cancel
+              </Button>
+              <Button onClick={createOrUpdateSchedule}>
+                {editingSchedule ? "Update Schedule" : "Create Schedule"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <div className="flex items-center space-x-2">
+        <Search className="w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search schedules..."
+          className="max-w-sm"
+        />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Calendar View</CardTitle>
+              <CardDescription>View your scheduled content in a calendar format</CardDescription>
+            </div>
+            <div className="flex items-center gap-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (calendarView === 'month') {
+                    setSelectedDate(prev => addMonths(prev, -1));
+                  } else if (calendarView === 'week') {
+                    setSelectedDate(prev => addWeeks(prev, -1));
+                  } else {
+                    setSelectedDate(prev => addDays(prev, -1));
+                  }
+                }}
+              >
+                {calendarView === 'month' ? 'Previous Month' :
+                  calendarView === 'week' ? 'Previous Week' :
+                    'Previous Day'}
+              </Button>
+              <div className="flex items-center gap-2">
+                <Select value={calendarView} onValueChange={(value: 'month' | 'week' | 'day') => setCalendarView(value)}>
+                  <SelectTrigger className="w-[140px]">
+                    <SelectValue placeholder="Select view" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="month">Month View</SelectItem>
+                    <SelectItem value="week">Week View</SelectItem>
+                    <SelectItem value="day">Day View</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="text-sm font-medium">
+                  {calendarView === 'month' ? format(selectedDate, 'MMMM yyyy') :
+                    calendarView === 'week' ? `Week of ${format(startOfWeek(selectedDate), 'MMM d')}` :
+                      format(selectedDate, 'MMMM d, yyyy')}
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (calendarView === 'month') {
+                    setSelectedDate(prev => addMonths(prev, 1));
+                  } else if (calendarView === 'week') {
+                    setSelectedDate(prev => addWeeks(prev, 1));
+                  } else {
+                    setSelectedDate(prev => addDays(prev, 1));
+                  }
+                }}
+              >
+                {calendarView === 'month' ? 'Next Month' :
+                  calendarView === 'week' ? 'Next Week' :
+                    'Next Day'}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border">            {calendarView === 'month' && (
+            <div>
+              <div className="grid grid-cols-7 text-sm mb-2">
+                {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day) => (
+                  <div key={day} className="text-center font-medium py-2">{day}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {Array.from({ length: 42 }, (_, i) => {
+                  const date = addDays(startOfMonth(selectedDate), i - getDay(startOfMonth(selectedDate)));
+                  const isCurrentMonth = isSameMonth(date, selectedDate);
+                  return (
+                    <div
+                      key={date.toISOString()}
+                      className={cn(
+                        "min-h-[120px] p-2 border rounded-lg",
+                        !isCurrentMonth && "bg-muted/10",
+                        isSameDay(date, new Date()) && "border-primary"
+                      )}
+                    >
+                      <div className={cn(
+                        "text-sm font-medium mb-1",
+                        !isCurrentMonth && "text-muted-foreground"
+                      )}>
+                        {format(date, 'd')}
+                      </div>
+                      <div className="space-y-1">
+                        {schedules
+                          .filter(schedule => {
+                            const start = new Date(schedule.startDate);
+                            const end = new Date(schedule.endDate);
+                            return isWithinInterval(date, { start, end });
+                          })
+                          .map((event) => (
+                            <div
+                              key={event.id}
+                              onClick={() => setSelectedEvent(event)}
+                              className={cn(
+                                "px-2 py-1 rounded text-white text-xs cursor-pointer truncate",
+                                event.priority === 'High' ? 'bg-red-500' :
+                                  event.priority === 'Medium' ? 'bg-blue-500' :
+                                    'bg-green-500'
+                              )}
+                              title={`${event.name} - ${event.content}`}
+                            >
+                              {event.name}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+            {calendarView === 'week' && (
+              <div className="grid grid-cols-7 divide-x divide-border overflow-hidden">
+                {eachDayOfInterval({
+                  start: startOfWeek(selectedDate),
+                  end: endOfWeek(selectedDate)
+                }).map((day, index) => (
+                  <div key={day.toISOString()} className={cn(
+                    "min-h-[600px] relative",
+                    index === 0 && "pl-4"
+                  )}>
+                    <div className="sticky top-0 z-20 -mx-1 px-2 py-4 bg-white border-b">
+                      <div className="text-sm font-medium">
+                        {format(day, 'EEEE')}
+                      </div>
+                      <div className={cn(
+                        "text-2xl font-semibold",
+                        isSameDay(day, new Date()) && "text-primary"
+                      )}>
+                        {format(day, 'dd')}
+                      </div>
+                    </div>
+                    <div className="p-2 space-y-1">
+                      {schedules.filter(schedule => {
+                        const start = new Date(schedule.startDate);
+                        const end = new Date(schedule.endDate);
+                        return isWithinInterval(day, { start, end });
+                      }).map((event) => (
+                        <div
+                          key={event.id}
+                          onClick={() => setSelectedEvent(event)}
+                          className={cn(
+                            "px-3 py-2 rounded text-white text-sm",
+                            "cursor-pointer hover:opacity-90 transition-opacity",
+                            event.priority === 'High' ? 'bg-red-500' :
+                              event.priority === 'Medium' ? 'bg-blue-500' :
+                                'bg-green-500'
+                          )}
+                          title={`${event.name} - ${event.content}`}
+                        >
+                          <div className="font-medium truncate">{event.name}</div>
+                          <div className="text-xs text-white/90 truncate">{event.content}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {calendarView === 'day' && (
+              <div className="min-h-[600px] relative p-4">
+                <div className="text-center mb-6">
+                  <div className="text-2xl font-semibold mb-1">
+                    {format(selectedDate, 'EEEE')}
+                  </div>
+                  <div className={cn(
+                    "text-3xl font-bold",
+                    isSameDay(selectedDate, new Date()) && "text-primary"
+                  )}>
+                    {format(selectedDate, 'MMMM d, yyyy')}
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  {schedules
+                    .filter(schedule => {
+                      const start = new Date(schedule.startDate);
+                      const end = new Date(schedule.endDate);
+                      return isWithinInterval(selectedDate, { start, end });
+                    })
+                    .map((event) => (
+                      <div
+                        key={event.id}
+                        onClick={() => setSelectedEvent(event)}
+                        className={cn(
+                          "p-4 rounded-lg border cursor-pointer hover:shadow-md transition-shadow",
+                          "bg-white"
+                        )}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h3 className="font-medium text-lg mb-1">{event.name}</h3>
+                            <p className="text-sm text-muted-foreground">{event.content}</p>
+                          </div>
+                          <Badge variant={
+                            event.priority === "High" ? "destructive" :
+                              event.priority === "Medium" ? "default" :
+                                "secondary"
+                          }>
+                            {event.priority}
+                          </Badge>
+                        </div>
+                        <div className="mt-4 flex items-center text-sm text-muted-foreground">
+                          <CalendarIcon2 className="w-4 h-4 mr-2" />
+                          {format(new Date(event.startDate), 'PPP')} - {format(new Date(event.endDate), 'PPP')}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Schedule</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this schedule? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!scheduleToDelete) return;
+                try {
+                  await xiboService.deleteSchedule(scheduleToDelete);
+                  setSchedules(prev => prev.filter(s => s.id !== scheduleToDelete));
+                  toast({
+                    title: "Schedule Deleted",
+                    description: "The schedule has been deleted successfully",
+                  });
+                } catch (error) {
+                  console.error('Error deleting schedule:', error);
+                  toast({
+                    title: "Error",
+                    description: "Failed to delete schedule. Please try again.",
+                    variant: "destructive"
+                  });
+                }
+                setShowDeleteDialog(false);
+                setScheduleToDelete(null);
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Schedule Details Dialog */}
+      <Dialog open={detailsDialog !== null} onOpenChange={(open) => !open && setDetailsDialog(null)}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>{detailsDialog?.name}</DialogTitle>
+            <DialogDescription>Schedule Details</DialogDescription>
+          </DialogHeader>
+          {detailsDialog && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground">Priority</label>
+                  <div className="mt-1">
+                    <Badge variant={
+                      detailsDialog.priority === "High" ? "destructive" :
+                        detailsDialog.priority === "Medium" ? "default" :
+                          "secondary"
+                    }>
+                      {detailsDialog.priority}
+                    </Badge>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground">Status</label>
+                  <div className="mt-1 flex items-center">
+                    {detailsDialog.status === "Active" && <CheckCircle2 className="mr-2 h-4 w-4 text-green-500" />}
+                    {detailsDialog.status === "Scheduled" && <Clock className="mr-2 h-4 w-4 text-blue-500" />}
+                    {detailsDialog.status}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-muted-foreground">Date Range</label>
+                <div className="mt-1">
+                  {format(new Date(detailsDialog.startDate), 'PPP')} - {format(new Date(detailsDialog.endDate), 'PPP')}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-muted-foreground">Content</label>
+                <div className="mt-1">{detailsDialog.content}</div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-muted-foreground">Displays</label>
+                <div className="mt-1">
+                  {detailsDialog.displays?.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {detailsDialog.displays.map((display) => (
+                        <Badge key={display} variant="outline">
+                          {display}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No displays assigned</span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-muted-foreground">Repeat Schedule</label>
+                <div className="mt-1">
+                  {detailsDialog.repeatSchedule === "none" ? "Does not repeat" : detailsDialog.repeatSchedule}
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailsDialog(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Tabs defaultValue="active" className="w-full">
+        <TabsList>
+          <TabsTrigger value="active">Active</TabsTrigger>
+          <TabsTrigger value="scheduled">Scheduled</TabsTrigger>
+          <TabsTrigger value="completed">Completed</TabsTrigger>
+          <TabsTrigger value="all">All</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="active" className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle>Active Schedules</CardTitle>
+              <CardDescription>
+                Currently active content scheduled across your displays
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[250px]">Name</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Start Date</TableHead>
+                    <TableHead>End Date</TableHead>
+                    <TableHead>Displays</TableHead>
+                    <TableHead>Content</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {displaySchedules(schedules.filter(s => s.status === "Active"))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="scheduled" className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle>Upcoming Schedules</CardTitle>
+              <CardDescription>
+                Content scheduled to be displayed in the future
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[250px]">Name</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Start Date</TableHead>
+                    <TableHead>End Date</TableHead>
+                    <TableHead>Displays</TableHead>
+                    <TableHead>Content</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {displaySchedules(schedules.filter(s => s.status === "Scheduled"))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="completed" className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle>Completed Schedules</CardTitle>
+              <CardDescription>
+                Past schedules that have completed their run
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[250px]">Name</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Start Date</TableHead>
+                    <TableHead>End Date</TableHead>
+                    <TableHead>Displays</TableHead>
+                    <TableHead>Content</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {displaySchedules(schedules.filter(s => s.status === "Completed"))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="all" className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle>All Schedules</CardTitle>
+              <CardDescription>
+                View all schedules across all displays
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[250px]">Name</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Start Date</TableHead>
+                    <TableHead>End Date</TableHead>
+                    <TableHead>Displays</TableHead>
+                    <TableHead>Content</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {displaySchedules(schedules)}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+};
+
+export default Schedules;
